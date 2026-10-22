@@ -1,6 +1,6 @@
 """GTS 改造版四元组抽取。
 
-输入：comparison_sentences.csv 的 id / simple_sentence
+输入：comparison_sentences.csv 的 id / compare_sentence
 输出：quads_raw.csv，字段见 QUAD_OUTPUT_COLUMNS
 
 模型：
@@ -348,7 +348,7 @@ def predict_dataframe(
 
     for _, row in frame.iterrows():
         unit_id = str(row["id"])
-        text = str(row["sentence"] if "sentence" in row else row.get("simple_sentence", ""))
+        text = str(row["sentence"] if "sentence" in row else row.get("compare_sentence", row.get("simple_sentence", "")))
         if not text:
             continue
         encoded = tokenizer(
