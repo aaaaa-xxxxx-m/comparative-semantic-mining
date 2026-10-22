@@ -76,7 +76,88 @@ models/gts/gts_config.json
 models/gts/tokenizer files
 ```
 
-### 3. 推理
+### 3. 训练后回传模型
+
+训练完成后，建议回传整个模型目录，不要只传 `*.pt`。筛选器和 GTS 都需要 tokenizer、配置文件或权重文件才能在其他设备上直接加载。
+
+先检查模型大小：
+
+```powershell
+Get-ChildItem modelsilter, models\gts -Recurse -File |
+  Select-Object FullName, Length
+```
+
+MacBERT-base 的两个模型目录通常会超过 100MB。GitHub 普通 Git 文件的单文件上限是 100MB，因此优先使用 GitHub Release；只有每个文件都小于 100MB 时才考虑直接提交。
+
+### 方案 A：GitHub Release（推荐）
+
+在训练设备上打包并创建 Release：
+
+```powershell
+Compress-Archive -Path modelsilter,models\gts -DestinationPath trained-models.zip
+
+gh release create models-v1 trained-models.zip `
+  --title "Trained models v1" `
+  --notes "Filter and GTS trained weights"
+```
+
+如果训练设备没有 `gh`，可以在 GitHub 仓库的 Releases 页面手动创建 Release 并上传 `trained-models.zip`。
+
+在主设备下载并解压到项目根目录：
+
+```powershell
+gh release download models-v1 --pattern trained-models.zip
+Expand-Archive trained-models.zip -DestinationPath .
+```
+
+完成后检查：
+
+```powershell
+Get-ChildItem modelsilter, models\gts
+```
+
+### 方案 B：小文件直接 Git 提交
+
+如果确认每个文件都小于 100MB：
+
+```powershell
+git add -f modelsilter models\gts
+git commit -m "chore: add trained models"
+git push
+```
+
+`models/` 默认被 `.gitignore` 忽略，所以需要 `git add -f`。不要提交大于 100MB 的单个权重文件。
+
+### 方案 C：Git LFS
+
+需要长期在仓库中版本化管理权重时，可以使用 Git LFS：
+
+```powershell
+git lfs install
+git lfs track "models/**/*.pt"
+git lfs track "models/**/*.bin"
+git lfs track "models/**/*.safetensors"
+git add .gitattributes
+git add -f modelsilter models\gts
+git commit -m "chore: add trained models with LFS"
+git push
+```
+
+Git LFS 需要额外的存储配额。模型较大或只需临时共享时，Release 更简单。
+
+无论使用哪种方式，主设备下载后都要保留：
+
+```text
+models/filter/filter_model.pt
+models/filter/filter_config.json
+models/filter/tokenizer files
+
+models/gts/gts_model.pt
+models/gts/gts_config.json
+models/gts/tokenizer files
+```
+
+### 4. 推理
 
 训练完成后运行：
 
@@ -94,7 +175,7 @@ python run.py all --device cuda
 
 `filter` 和 `extract` 需要对应的模型权重。当前仓库不包含权重，直接运行会明确报错。
 
-### 4. 重新生成数据（可选）
+### 5. 重新生成数据（可选）
 
 只有在需要修改合成数据或重新标注时才需要 GLM。创建 `.env`：
 
