@@ -1,7 +1,7 @@
 """层级句向量筛选器与链式分段。
 
 输入：sentences.csv，字段 id / sentence / origin_id
-输出：comparison_sentences.csv，字段 id / simple_sentence
+输出：comparison_sentences.csv，字段 id / compare_sentence
 
 模型结构：
 - 共享 BERT 编码句子；
@@ -381,10 +381,10 @@ def run_filter(
                     continue
                 title_prefix = unit.title if start_by_title else ""
 
-            simple_sentence = f"{title_prefix} {SEP} {SEP.join(chain)}"
-            rows.append({"id": unit.id, "simple_sentence": simple_sentence})
+            compare_sentence = f"{title_prefix} {SEP} {SEP.join(chain)}"
+            rows.append({"id": unit.id, "compare_sentence": compare_sentence})
             position = end_position + 1
 
-    output = pd.DataFrame(rows, columns=["id", "simple_sentence"])
+    output = pd.DataFrame(rows, columns=["id", "compare_sentence"])
     output.to_csv(output_path, index=False, encoding="utf-8-sig")
     return output
