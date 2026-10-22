@@ -12,14 +12,8 @@ models/gts/*
 
 input/raw/*
 !input/raw/.gitkeep
-input/supplement/*
-!input/supplement/.gitkeep
 
-sentences.csv
-comparison_sentences.csv
-quads_raw.csv
-quads_final.xlsx
-run.json
-run.log
-data/*
-!data/.gitkeep
+data/sentences.csv
+data/*.failed.jsonl
+output/*
+!output/.gitkeep
