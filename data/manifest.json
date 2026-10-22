@@ -1,0 +1,29 @@
+{
+  "id_scheme": {
+    "raw_split": "a_{8-digit text number}_cut{clause number}",
+    "synthetic_article": "a_90000001..a_90000650",
+    "sentence_unit": "a_{8-digit article number}_cut{2-digit clause number}",
+    "mention": "a_{8-digit article number}_cut{2-digit clause number}_{2-digit mention number}",
+    "final": "a_{8-digit article number}_quad{7-digit group number}"
+  },
+  "article_counts": {
+    "total": 650,
+    "positive": 488,
+    "negative": 162
+  },
+  "annotation_count": 488,
+  "datasets": {
+    "articles": 650,
+    "annotations": 488,
+    "filter": {
+      "train": 5155,
+      "valid": 2983,
+      "test": 1493
+    },
+    "gts": {
+      "train": 1078,
+      "valid": 625,
+      "test": 298
+    }
+  }
+}
