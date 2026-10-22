@@ -1,10 +1,10 @@
 """黄酒比较语义筛选、四元组抽取与规范化入口。
 
 流程：
-    prepare  -> sentences.csv
-    filter   -> comparison_sentences.csv
-    extract  -> quads_raw.csv
-    normalize-> quads_final.xlsx
+    prepare  -> data/sentences.csv
+    filter   -> output/comparison_sentences.csv
+    extract  -> output/quads_raw.csv
+    normalize-> output/quads_final.xlsx
 
 本文件负责数据读取、阶段调度、规范化与聚合；筛选模型在 filter.py，
 GTS 模型在 gts.py。当前未包含数据补齐与模型训练命令。
@@ -28,12 +28,13 @@ INPUT_DIR = BASE_DIR / "input"
 RAW_DIR = INPUT_DIR / "raw"
 LEXICON_DIR = INPUT_DIR / "lexicons"
 
-SENTENCES_CSV = BASE_DIR / "sentences.csv"
-COMPARISON_CSV = BASE_DIR / "comparison_sentences.csv"
-QUADS_RAW_CSV = BASE_DIR / "quads_raw.csv"
-QUADS_FINAL_XLSX = BASE_DIR / "quads_final.xlsx"
-RUN_JSON = BASE_DIR / "run.json"
-RUN_LOG = BASE_DIR / "run.log"
+OUTPUT_DIR = BASE_DIR / "output"
+SENTENCES_CSV = BASE_DIR / "data" / "sentences.csv"
+COMPARISON_CSV = OUTPUT_DIR / "comparison_sentences.csv"
+QUADS_RAW_CSV = OUTPUT_DIR / "quads_raw.csv"
+QUADS_FINAL_XLSX = OUTPUT_DIR / "quads_final.xlsx"
+RUN_JSON = OUTPUT_DIR / "run.json"
+RUN_LOG = OUTPUT_DIR / "run.log"
 
 FILTER_DIR = BASE_DIR / "models" / "filter"
 GTS_DIR = BASE_DIR / "models" / "gts"
@@ -56,6 +57,7 @@ def now() -> str:
 
 
 def log(message: str, level: str = "INFO", **fields: Any) -> None:
+    RUN_LOG.parent.mkdir(parents=True, exist_ok=True)
     line = f"[{now()}] {level} {message}"
     if fields:
         line += " " + json.dumps(fields, ensure_ascii=False, default=str)
@@ -98,7 +100,7 @@ def update_run_json(**updates: Any) -> None:
 
 
 def ensure_dirs() -> None:
-    for directory in [INPUT_DIR, RAW_DIR, LEXICON_DIR, FILTER_DIR, GTS_DIR]:
+    for directory in [INPUT_DIR, RAW_DIR, LEXICON_DIR, FILTER_DIR, GTS_DIR, OUTPUT_DIR]:
         directory.mkdir(parents=True, exist_ok=True)
 
 
@@ -183,7 +185,7 @@ def prepare(args: argparse.Namespace) -> None:
             else:
                 sentence = f"{SEP} {piece} {SEP}"
             output_rows.append({
-                "id": f"{prefix}_{text_number:08d}_{index:02d}",
+                "id": f"{prefix}_{text_number:08d}_cut{index:02d}",
                 "sentence": sentence,
                 "origin_id": record["origin_id"],
             })
@@ -450,7 +452,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="黄酒比较语言筛选与四元组抽取")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("prepare", help="原始表 -> sentences.csv")
+    p = sub.add_parser("prepare", help="原始表 -> data/sentences.csv")
     p.add_argument("--raw-dir", type=Path, default=RAW_DIR)
     p.add_argument("--min-len", type=int, default=6)
     p.set_defaults(func=prepare)
@@ -471,7 +473,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--device", default="cpu", help="cpu、cuda 或 cuda:N；默认 cpu")
     p.set_defaults(func=extract_quads)
 
-    p = sub.add_parser("normalize", help="规范化、合并并导出 quads_final.xlsx")
+    p = sub.add_parser("normalize", help="规范化、合并并导出 output/quads_final.xlsx")
     p.set_defaults(func=normalize)
 
     p = sub.add_parser("all", help="filter -> extract -> normalize")
