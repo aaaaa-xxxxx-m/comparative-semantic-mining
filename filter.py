@@ -124,7 +124,7 @@ def title_entities(title: str, brands: Sequence[str], categories: Sequence[str])
     return found
 
 
-def rule_gate(title: str, current: str, brands: Sequence[str], categories: Sequence[str]) -> bool:
+def rule_gate(title: str, current: str, brands: Sequence[str], categories: Sequence[str], mode: str = "strict") -> bool:
     entities = title_entities(title, brands, categories)
     if not entities:
         return False
@@ -134,6 +134,8 @@ def rule_gate(title: str, current: str, brands: Sequence[str], categories: Seque
     has_evaluative = has_any(current, EVALUATIVE_CUES)
     # 省略：本句没有品牌/品类实体，也没有明确比较对象
     has_entity = has_any(current, brands) or has_any(current, categories)
+    if mode == "recall":
+        return has_pronoun or has_comparison or has_evaluative or has_entity
     return has_pronoun or (has_comparison and has_evaluative) or (has_comparison and not has_entity)
 
 
@@ -313,6 +315,8 @@ def run_filter(
     title_threshold: float = T_THRESHOLD,
     l_start_threshold: float = START_THRESHOLD,
     l_continue_threshold: float = L_CONTINUE_THRESHOLD,
+    u_threshold: float = START_THRESHOLD,
+    title_gate_mode: str = "strict",
     device: str = "cpu",
 ) -> pd.DataFrame:
     frame = pd.read_csv(sentences_path, encoding="utf-8-sig", dtype=str).fillna("")
@@ -337,12 +341,12 @@ def run_filter(
                 l_score = model.score_l([(current_ids, current_mask)], next_ids, next_mask)
 
             title_score = 0.0
-            if unit.title and rule_gate(unit.title, unit.current, brands, categories):
+            if unit.title and rule_gate(unit.title, unit.current, brands, categories, title_gate_mode):
                 title_ids, title_mask = _encode(tokenizer, unit.title, device=target)
                 title_score = model.score_t(title_ids, title_mask, current_ids, current_mask)
 
             start_by_title = False
-            if u_score >= START_THRESHOLD or l_score >= l_start_threshold:
+            if u_score >= u_threshold or l_score >= l_start_threshold:
                 start = True
             elif unit.title and title_score >= title_threshold:
                 start = True
