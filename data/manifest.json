@@ -9,13 +9,21 @@
   },
   "gts": {
     "train": 1722,
-    "valid": 183,
+    "valid": 182,
     "test": 168
   },
   "gts_augmentation": {
-    "directional_train_only": 234,
-    "positive_pairs": 574,
-    "negative_pairs": 1148
+    "positive_pairs": 532,
+    "negative_pairs": 1190,
+    "directional_train_only": 234
   },
-  "aspect_weights": "computed in train.py"
+  "aspect_weights": "computed in train.py",
+  "gts_reclassification": {
+    "train_to_positive": 5,
+    "train_to_negative": 47,
+    "valid_to_positive": 1,
+    "valid_to_negative": 10,
+    "dropped_duplicate": 1,
+    "test": "untouched"
+  }
 }
