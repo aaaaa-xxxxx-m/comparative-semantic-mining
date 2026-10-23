@@ -4,24 +4,24 @@
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.x-ee4c2c)](https://pytorch.org/)
 [![Transformers](https://img.shields.io/badge/Transformers-4.x-yellow)](https://huggingface.co/docs/transformers/)
 
-从中文消费文本中识别与黄酒相关的比较语义，抽取“主体—客体—方面—得分”四元组，并按原始文本聚合为可分析的比较结论。
+从中文平台文本中识别黄酒相关的比较语义，抽取“主体—客体—方面—得分”四元组，并按原始文本聚合，供后续统计分析使用。
 
-仓库包含完整的预处理、合成数据生成、句子标注、筛选、抽取、规范化和训练入口，并已附带当前训练数据。模型权重尚未训练，下载后可以直接开始训练；训练完成前不能得到真实的筛选或抽取结果。
+训练数据以 9 个平台的原始数据为主体，LLM 生成数据只用于补充训练量。验证集和测试集只使用原始数据。
 
 ## 当前状态
 
-| 阶段 | 状态 |
-|---|---|
-| 原始表拆分 | 已完成，188,084 条句级窗口 |
-| 合成文章 | 已完成，650 篇 |
-| 正例文章标注 | 已完成，488 篇 |
-| Filter 数据 | 5,155 / 2,983 / 1,493 |
-| GTS 数据 | 1,078 / 625 / 298 |
-| 训练数据 | 已随仓库提供 |
-| 筛选器权重 | 未训练 |
-| GTS 权重 | 未训练 |
+| 项目 | 数量 |
+|---|---:|
+| 原始标注单元 | 1,000 |
+| 生成训练单元 | 599 |
+| GLM 5.3 Flash 标注 | 1,599 |
+| Filter train / valid / test | 1,384 / 903 / 1,132 |
+| GTS train / valid / test | 1,086 / 183 / 168 |
+| 训练集 raw : generated | 5 : 5 |
+| GTS 正 : 负 pair | 1 : 2 |
+| 模型权重 | 未训练，不包含在仓库中 |
 
-数据是合成数据，不是人工金标。用于训练或评测前仍需抽检。
+测试集只使用原始数据，生成数据只进入训练集。
 
 ## 快速开始
 
@@ -47,11 +47,11 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-GPU 训练请按机器 CUDA 版本单独安装 PyTorch。训练和推理设备由 `--device` 显式指定，支持 `cpu`、`cuda`、`cuda:0`，默认 `cpu`；指定 CUDA 但环境不可用时会直接报错，不会自动回退。
+GPU 训练请按 CUDA 版本安装对应 PyTorch。
 
-### 2. 直接训练
+### 2. 训练
 
-训练数据已经放在 `data/filter/` 和 `data/gts/`，训练不需要 GLM key，也不需要重新生成数据。
+训练数据已经在仓库中，训练不需要 GLM key。
 
 ```powershell
 python train.py filter --device cuda `
@@ -62,7 +62,7 @@ python train.py gts --device cuda `
   --train-data data/gts/gts_train.csv
 ```
 
-没有 GPU 时把 `--device cuda` 改成 `--device cpu`。显存不足时先降低 `--batch-size`。
+没有 GPU 时使用 `--device cpu`。显存不足时降低 `--batch-size`。
 
 训练产物：
 
@@ -76,90 +76,7 @@ models/gts/gts_config.json
 models/gts/tokenizer files
 ```
 
-### 3. 训练后回传模型
-
-训练完成后，建议回传整个模型目录，不要只传 `*.pt`。筛选器和 GTS 都需要 tokenizer、配置文件或权重文件才能在其他设备上直接加载。
-
-先检查模型大小：
-
-```powershell
-Get-ChildItem modelsilter, models\gts -Recurse -File |
-  Select-Object FullName, Length
-```
-
-MacBERT-base 的两个模型目录通常会超过 100MB。GitHub 普通 Git 文件的单文件上限是 100MB，因此优先使用 GitHub Release；只有每个文件都小于 100MB 时才考虑直接提交。
-
-### 方案 A：GitHub Release（推荐）
-
-在训练设备上打包并创建 Release：
-
-```powershell
-Compress-Archive -Path modelsilter,models\gts -DestinationPath trained-models.zip
-
-gh release create models-v1 trained-models.zip `
-  --title "Trained models v1" `
-  --notes "Filter and GTS trained weights"
-```
-
-如果训练设备没有 `gh`，可以在 GitHub 仓库的 Releases 页面手动创建 Release 并上传 `trained-models.zip`。
-
-在主设备下载并解压到项目根目录：
-
-```powershell
-gh release download models-v1 --pattern trained-models.zip
-Expand-Archive trained-models.zip -DestinationPath .
-```
-
-完成后检查：
-
-```powershell
-Get-ChildItem modelsilter, models\gts
-```
-
-### 方案 B：小文件直接 Git 提交
-
-如果确认每个文件都小于 100MB：
-
-```powershell
-git add -f modelsilter models\gts
-git commit -m "chore: add trained models"
-git push
-```
-
-`models/` 默认被 `.gitignore` 忽略，所以需要 `git add -f`。不要提交大于 100MB 的单个权重文件。
-
-### 方案 C：Git LFS
-
-需要长期在仓库中版本化管理权重时，可以使用 Git LFS：
-
-```powershell
-git lfs install
-git lfs track "models/**/*.pt"
-git lfs track "models/**/*.bin"
-git lfs track "models/**/*.safetensors"
-git add .gitattributes
-git add -f modelsilter models\gts
-git commit -m "chore: add trained models with LFS"
-git push
-```
-
-Git LFS 需要额外的存储配额。模型较大或只需临时共享时，Release 更简单。
-
-无论使用哪种方式，主设备下载后都要保留：
-
-```text
-models/filter/filter_model.pt
-models/filter/filter_config.json
-models/filter/tokenizer files
-
-models/gts/gts_model.pt
-models/gts/gts_config.json
-models/gts/tokenizer files
-```
-
-### 4. 推理
-
-训练完成后运行：
+### 3. 推理
 
 ```powershell
 python run.py filter --device cuda
@@ -167,344 +84,218 @@ python run.py extract --device cuda
 python run.py normalize
 ```
 
-也可以一次执行后三步：
+也可以：
 
 ```powershell
 python run.py all --device cuda
 ```
 
-`filter` 和 `extract` 需要对应的模型权重。当前仓库不包含权重，直接运行会明确报错。
+`filter` 和 `extract` 需要对应模型权重；当前仓库不包含权重。
 
-### 5. 重新生成数据（可选）
+### 4. 评估
 
-只有在需要修改合成数据或重新标注时才需要 GLM。创建 `.env`：
-
-```text
-ZHIPU_API_KEY=你的key
-ZHIPU_MODEL=glm-5.3
-GLM_REASONING_EFFORT=low
-```
-
-然后执行：
+训练完成后，在原始测试集上评估：
 
 ```powershell
-python generate_articles.py --workers 4
-python annotate_articles.py --limit 488
+python evaluate.py --device cuda
 ```
 
-`.env` 已被 `.gitignore` 忽略，不要提交到仓库。`run.py prepare` 只在需要从原始表重新生成 `data/sentences.csv` 时使用。
+结果写入 `output/evaluation.json`。
 
-## 项目结构
+评估口径：
 
-```text
-compare/
-├── run.py                       # 预处理、筛选、抽取、规范化入口
-├── filter.py                    # 层级句向量筛选器
-├── gts.py                       # GTS 模型、Dataset 与解码
-├── train.py                     # 筛选器 / GTS 训练入口
-├── generate_articles.py         # 生成合成文章
-├── annotate_articles.py         # 句子标注与训练数据组装
-├── README.md
-├── requirements.txt
-├── .env                         # 本地配置，不提交
-├── input/
-│   ├── raw/                     # 9 张原始表，git 忽略
-│   └── lexicons/                # 品牌、方面、品类词典
-├── data/
-│   ├── sentences.csv            # 原始表拆分结果，git 忽略
-│   ├── articles.jsonl           # 650 篇合成文章
-│   ├── annotations.jsonl        # 488 篇正例标注
-│   ├── manifest.json            # 数据数量与 ID 规则
-│   ├── filter/                  # filter_train / valid / test.jsonl
-│   └── gts/                     # gts_train / valid / test.csv
-├── output/                      # 运行时产物，git 忽略
-└── models/
-    ├── filter/
-    └── gts/
-```
+- Filter：U/L/T 的 precision、recall、F1
+- GTS：relation precision/recall/F1、方面准确率、得分 MAE、得分符号准确率、exact、partial
+- exact：主体、客体、方面、得分全部正确
+- 得分 exact 容差：`±0.05`
+- 测试集不参与训练或调参
 
-### 文件职责
+## 验收目标
 
-| 路径 | 职责 |
-|---|---|
-| `run.py` | 预处理与推理阶段调度 |
-| `filter.py` | 比较句筛选与链式分段 |
-| `gts.py` | 四元组抽取与解码 |
-| `train.py` | 筛选器和 GTS 训练 |
-| `generate_articles.py` | 调用 GLM 生成文章 |
-| `annotate_articles.py` | 生成句子标签、filter 数据和 GTS 数据 |
-| `data/articles.jsonl` | 合成文章，ID 为 `a_90000001..a_90000650` |
-| `data/annotations.jsonl` | 正例文章逐句标签与四元组 |
-| `data/filter/` | `u/l/t` 三类筛选训练样本 |
-| `data/gts/` | 带字符级 span 的四元组训练数据 |
-| `output/` | 筛选、抽取、规范化结果 |
+以下是目标值，不是当前结果。测试集只用于最终评估，不参与调参。
 
-## 数据
+### Filter
 
-### ID 规则
-
-原始表拆分后：
-
-```text
-a_00012345_cut01
-s_00012346_cut01
-```
-
-合成文章：
-
-```text
-a_90000001 ... a_90000650
-```
-
-合成句子单元、GTS mention 和最终聚合：
-
-```text
-a_90000004_cut02
-a_90000004_cut02_01
-a_90000004_quad0000001
-```
-
-`text_group_id` 取文章级 ID，如 `a_90000004`。同一篇文章的不同 `cut` 会在最终阶段合并，因此最终 `id` 是文章级编号，而不是句子级编号。
-
-### 数据规模
-
-| 数据集 | 数量 |
+| 指标 | 目标 |
 |---|---:|
-| 原始拆句 | 188,084 |
-| 合成文章 | 650 |
-| 正例标注 | 488 |
-| Filter train / valid / test | 5,155 / 2,983 / 1,493 |
-| GTS train / valid / test | 1,078 / 625 / 298 |
-
-`data/manifest.json` 记录当前数量、ID 规则和数据文件清单。
-
-### 仓库包含的数据
-
-| 文件 | 是否随仓库提供 | 用途 |
-|---|---|---|
-| `data/filter/*.jsonl` | 是 | 筛选器训练与验证 |
-| `data/gts/*.csv` | 是 | GTS 训练与验证 |
-| `data/articles.jsonl` | 是 | 文章源数据与回溯 |
-| `data/annotations.jsonl` | 是 | 句子标签与四元组回溯 |
-| `data/manifest.json` | 是 | 数据数量与 ID 说明 |
-| `data/sentences.csv` | 否 | 原始表拆分中间产物，可重新生成 |
-| `input/raw/*.xlsx` | 否 | 原始采集数据 |
-| `output/*` | 否 | 推理运行时产物 |
-| `models/*` | 否 | 训练后生成的权重 |
-
-训练只需要 `data/filter/` 和 `data/gts/`；`articles` 与 `annotations` 用于检查和重新组装数据。
-
-### Filter 数据格式
-
-`data/filter/*.jsonl` 每行一个训练样本：
-
-```json
-{"task": "u", "text": "当前句", "label": 1}
-{"task": "l", "context": ["上一句"], "next": "下一句", "label": 1}
-{"task": "t", "title": "标题", "current": "当前句", "label": 0}
-```
-
-### GTS 数据格式
-
-`data/gts/*.csv` 至少包含：
-
-```text
-text, subject_start, subject_end, object_start, object_end, aspect_theme, score
-```
-
-`text` 使用 `[SEP]` 分隔标题和正文句子，`subject_start/end`、`object_start/end` 是字符级偏移，`score` 表示主体相对客体的得分，范围为 `-1..1`。
-
-## 工作流
-
-### 1. 预处理
-
-```powershell
-python run.py prepare
-```
-
-读取 `input/raw/` 下的 9 张原始表，过滤过短文本，按 `。？！` 切句，输出 `data/sentences.csv`。
-
-### 2. 生成文章
-
-```powershell
-python generate_articles.py --workers 4
-```
-
-按训练 350、验证 200、测试 100 生成 650 篇文章，支持断点续跑。完成后可继续生成缺失文章，不会重复处理已有 ID。
-
-### 3. 标注并组装数据
-
-```powershell
-python annotate_articles.py --limit 488
-```
-
-给正例文章补逐句比较标签和四元组，生成 `data/annotations.jsonl`、`data/filter/` 和 `data/gts/`。
-
-### 4. 训练
-
-```powershell
-python train.py filter --device cpu `
-  --train-data data/filter/filter_train.jsonl `
-  --valid-data data/filter/filter_valid.jsonl
-
-python train.py gts --device cuda `
-  --train-data data/gts/gts_train.csv
-```
-
-训练产物：
-
-```text
-models/filter/filter_model.pt
-models/filter/filter_config.json
-models/filter/tokenizer files
-
-models/gts/gts_model.pt
-models/gts/gts_config.json
-models/gts/tokenizer files
-```
-
-### 5. 推理
-
-```powershell
-python run.py filter --device cuda
-python run.py extract --device cuda
-python run.py normalize
-```
-
-筛选结果写入 `output/comparison_sentences.csv`，字段为：
-
-```text
-id, compare_sentence
-```
-
-最终结果写入 `output/quads_final.xlsx`，字段为：
-
-```text
-id, 比较客体, 比较方面, 比较得分, origin_id
-```
-
-## 设计要点
-
-- 筛选器使用共享 BERT，包含 U、L、T 三个判断头；T 只在 U/L 都不成立时作为标题兜底。
-- 链式分段最多 5 句、512 tokens；超长比较在块边界截断，不把句子截断。
-- 标题型块保留标题，显式块保留空的标题段，块内用 `[SEP]` 保持结构。
-- GTS 一次处理 `title + chain`，按出现顺序定位主体和客体，输出 5 类方面和主体相对得分。
-- 规范化阶段处理实体、方面、方向和得分，按 `text_group_id` 合并；同一组最多使用 5 条 mention 计算均值。
-- 最终 `origin_id` 取组内最早的原始 mention ID。
-
-## 模型评价指标
-
-当前尚未训练模型，以下都是验收目标，不是已经达到的结果。测试集只用于最终评估，不参与阈值选择或调参。T 的目标沿用旧版方案，其余为当前项目的验收目标。
-
-### 筛选器
-
-| 指标 | 目标值 |
-|---|---:|
-| U precision | ≥ 0.85 |
-| U recall | ≥ 0.80 |
-| U F1 | ≥ 0.82 |
-| L precision | ≥ 0.85 |
-| L recall | ≥ 0.80 |
-| L F1 | ≥ 0.82 |
+| U/L precision | ≥ 0.85 |
+| U/L recall | ≥ 0.80 |
+| U/L F1 | ≥ 0.82 |
 | 当前句锚定准确率 | ≥ 0.85 |
 | T precision | ≥ 0.90 |
 | T FPR | ≤ 0.10 |
 | T FDR | ≤ 0.10 |
 | T implicit recall | ≥ 0.70 |
 
-T 的初始阈值保持 `0.9`。如果 T precision 不达标，先补难负例，再考虑提高阈值，不把阈值降到 `0.9` 以下。
-
-补充对照：
-
-- 层级上下文融合的 F1 不低于无上下文基线，目标提升 ≥ 0.02。
-- T-last 的 precision 不低于无标题兜底，同时报告 implicit recall 的变化。
-- 分别报告标题可用、标题不可用子集。
-
 ### GTS
 
-| 指标 | 目标值 |
+| 指标 | 目标 |
 |---|---:|
-| 四元组 exact F1 | ≥ 0.60 |
-| 四元组 partial F1 | ≥ 0.75 |
+| pair relation precision | ≥ 0.85 |
+| pair relation recall | ≥ 0.80 |
+| pair relation F1 | ≥ 0.82 |
 | 方面准确率 | ≥ 0.85 |
 | 方面 Macro-F1 | ≥ 0.80 |
 | 得分 MAE | ≤ 0.20 |
 | 得分符号准确率 | ≥ 0.80 |
-| 方向准确率（辅助） | ≥ 0.80 |
-| 原始文本级唯一四元组 recall | ≥ 0.65 |
-| 原始文本级唯一四元组 precision | ≥ 0.70 |
-| 原始文本级唯一四元组 F1 | ≥ 0.65 |
+| exact（±0.05） | ≥ 0.60 |
+| partial | ≥ 0.75 |
 
-GTS 主指标是原始文本级唯一四元组的 recall，precision 和 F1 也按同一去重口径计算。预测和 gold 都按 `text_group_id + canonical_key` 去重，重复率只作诊断，不作为主要验收指标。
+测试集不参与训练或调参；exact 要求主体、客体、方面、得分全部正确，得分容差为 `±0.05`。
 
-补充报告：
+## 项目结构
 
-- 跨句样本单独统计。
-- 标题型块与显式块分别统计。
-- `max_pairs=30` 与阈值 `0.1` 的召回率、精确率对照。
-- 方向准确率只作辅助，不替代主体和客体字段的 exact/partial F1。
+```text
+compare/
+├── run.py                       # 实际推理入口
+├── filter.py                    # 层级句向量筛选器
+├── gts.py                       # pair 级 GTS
+├── train.py                     # Filter / GTS 训练入口
+├── evaluate.py                  # 原始测试集评估
+├── text_utils.py                # 共享清洗和切句
+├── curate_raw.py                # 原始数据筛选、去重、分组、拆分
+├── generate_supplement.py       # 按原始风格生成训练补充数据
+├── annotate_units.py            # raw/generated 标注
+├── build_datasets.py            # Filter/GTS 数据组装
+├── llm_client.py                # GLM 5.3 Flash 客户端
+├── README.md
+├── requirements.txt
+├── input/
+│   ├── raw/                     # 9 个平台原始表，git 忽略
+│   └── lexicons/                # 品牌、方面、品类词典
+├── data/
+│   ├── raw/                     # raw train / valid / test
+│   ├── generated/               # generated train
+│   ├── annotations/             # raw / generated 标注
+│   ├── filter/                  # Filter 训练数据
+│   ├── gts/                     # pair 级 GTS 训练数据
+│   └── manifest.json
+├── output/                      # 推理产物，git 忽略
+└── models/
+    ├── filter/
+    └── gts/
+```
+
+## 数据来源与 ID
+
+正式数据只来自以下 9 个平台：
+
+```text
+BZ  DY  JD  PDD  TB  WB  XHS  XW  ZH
+```
+
+原始数据按文章、帖子或回复线程分组，再划分：
+
+```text
+raw train : raw valid : raw test = 600 : 200 : 200
+```
+
+生成数据只进入 train。
+
+ID 规则：
+
+```text
+raw article/unit:      a_80000001 ...
+generated unit:        a_81000001 ...
+sentence unit:         a_80000001_cut01
+GTS mention:           a_80000001_cut01_01
+final aggregate id:    a_80000001_quad0000001
+```
+
+`text_group_id` 取文章级 ID。
+
+## 标注
+
+- 标注模型：GLM 5.3 Flash
+- 原始数据和生成数据都标注
+- 每条标注包含句子级 `comparison`、`title_comparison` 和四元组
+- 为中和过度抽取，限制每篇最多 3 条四元组、每句最多 2 条
+- 相同 subject/object/aspect 去重
+- 保留 `annotator_model` 和 `annotation_version`
+
+## Filter 数据
+
+训练集 raw : generated = 5 : 5。
+
+Filter 任务包含：
+
+```text
+U：当前句是否比较
+L：当前链上下文下，下一句是否继续
+T：标题 + 当前句是否比较
+```
+
+验证集和测试集保持原始数据自然分布。
+
+## GTS 数据
+
+GTS 使用 pair 级数据：
+
+```text
+正 pair : 负 pair = 1 : 2
+```
+
+训练集的 raw : generated = 5 : 5。
+
+负 pair 来自同一文章内的交叉实体对和词典实体对；负 pair 的方面为“其他”，得分为 0。
+
+GTS 模型保留 BIO span 抽取，并按 pair 分别预测 relation、aspect 和 score。`max_pairs=20`，在 relation 过滤和排序后截断。
+
+不做实体名规范化。
 
 ## 配置
 
+生成本仓库数据时使用 GLM 5.3 Flash：
+
 | 环境变量 | 说明 | 默认值 |
 |---|---|---|
-| `ZHIPU_API_KEY` | 智谱 API key | 无，生成/标注必填 |
-| `ZHIPU_MODEL` | 生成模型 | `glm-5.3` |
+| `LLM_PROVIDER` | 生成/标注提供方 | `glm` |
+| `ZHIPU_API_KEY` | 智谱 API key | 无，重新生成数据时必填 |
+| `ZHIPU_MODEL` | 标注模型 | `glm-5.3-flash` |
 | `ZHIPU_BASE_URL` | 智谱兼容接口 | `https://open.bigmodel.cn/api/paas/v4/` |
 | `GLM_REASONING_EFFORT` | 思考强度 | `low` |
-| `GLM_MAX_TOKENS` | 单次生成上限 | `4096` |
+| `GLM_MAX_TOKENS` | 单次生成上限 | `8192` |
 | `HF_ENDPOINT` | Hugging Face 镜像 | `https://hf-mirror.com` |
 
-## Windows 说明
+训练不需要 `.env`。重新生成数据时才需要配置。
 
-PowerShell 中激活虚拟环境：
-
-```powershell
-.venv\Scripts\activate
-```
-
-如果 `python` 不在 `PATH` 中，使用完整解释器路径。训练和推理命令中的 `--device` 写在子命令之后：
+## 重新生成数据（可选）
 
 ```powershell
-python train.py filter --device cuda --train-data ...
-python run.py filter --device cuda
+python curate_raw.py
+python generate_supplement.py --workers 2
+python annotate_units.py --limit 1600 --workers 2
+python build_datasets.py
 ```
 
-## AI 数据说明
-
-本项目的文章、句子标签和四元组包含 GLM 生成内容，属于合成数据，不是人工金标。
-
-- 生成数据可以用于训练和流程验证，但不能直接当作真实评测结论。
-- 用于正式训练前应抽取样本检查文章结构、span、方面和得分方向。
-- 使用 LLM 修改代码或数据时，提交者需要理解改动并对结果负责。
-- 不要把 API key、原始数据和模型权重提交到公开仓库。
+原始文件不上传仓库；`data/` 中是处理后的训练数据。
 
 ## 已知限制
 
-- 筛选器和 GTS 尚未训练，当前没有可用的性能指标。
-- `filter` 和 `extract` 在缺少权重时会报错，这是预期行为。
-- 合成数据存在标题重复、句式相似和标注偏差，需要后续人工抽检。
-- 原始表、`data/sentences.csv`、模型权重和 `output/` 默认不进入 Git。
-- 当前未附许可证文件，对外使用或再分发前请先确认授权方式。
+- 模型尚未训练，仓库不提供性能指标或权重。
+- 合成数据存在标签噪声，正式使用前应抽检。
+- 原始测试集中缺少无标题或跨句样本时，对应分组指标标记为“不支持”。
+- `data/sentences.csv` 是可重新生成的推理预处理中间产物，不随训练数据上传。
+- 当前未附许可证文件。
 
 ## 贡献
 
 1. Fork 仓库并创建分支。
-2. 修改代码或数据后，至少运行一次编译检查：
+2. 修改后运行编译检查：
 
    ```powershell
-   python -m py_compile run.py filter.py gts.py train.py generate_articles.py annotate_articles.py
+   python -m py_compile run.py filter.py gts.py train.py evaluate.py text_utils.py curate_raw.py generate_supplement.py annotate_units.py build_datasets.py llm_client.py
    ```
 
-3. 如果修改了数据结构，同步更新 `data/manifest.json` 和 README。
-4. 提交 Pull Request，并说明数据来源、改动范围和验证方式。
+3. 修改数据结构时同步更新 `data/manifest.json` 和 README。
+4. 提交 Pull Request，说明数据来源、改动范围和验证方式。
 
 ## 问题反馈
 
-如果发现数据错误、ID 不一致或流程无法运行，请在仓库 Issues 中提交，附上：
+请在仓库 Issues 中提交：
 
 - 复现命令
-- 输入文件路径
+- 输入文件
 - 错误日志
 - 相关 ID 或样本
 
