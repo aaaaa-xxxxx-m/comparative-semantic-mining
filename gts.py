@@ -1,17 +1,4 @@
-"""GTS 改造版四元组抽取。
-
-输入：comparison_sentences.csv 的 id / compare_sentence
-输出：quads_raw.csv，字段见 QUAD_OUTPUT_COLUMNS
-
-模型：
-- 共享 BERT；
-- BIO 头抽主体/客体 span；
-- 双线性方向头判断 S→O / O→S，作为辅助；
-- 方面 5 分类；
-- 得分回归，表示前者相对后者。
-
-抽取阶段不去重、不合并、不平均；重复留给原始文本级聚合。
-"""
+"""GTS 改造版：BIO 实体 span + pair 级关系/方面/得分。"""
 
 from __future__ import annotations
 
@@ -28,16 +15,8 @@ ASPECT_THEMES = ["文化认知", "消费场景", "产品体验", "竞争压力",
 BIO_LABELS = ["O", "B-S", "I-S", "B-O", "I-O"]
 BIO_TO_ID = {label: idx for idx, label in enumerate(BIO_LABELS)}
 SEP = "[SEP]"
-MAX_PAIRS = 30
-PAIR_THRESHOLD = 0.1
-
-QUAD_OUTPUT_COLUMNS = [
-    "mention_id", "text_group_id", "text",
-    "subject_raw", "subject_start", "subject_end",
-    "object_raw", "object_start", "object_end",
-    "direction_raw", "aspect_theme", "score_raw",
-    "subject_source", "object_source", "source", "confidence",
-]
+MAX_PAIRS = 20
+PAIR_THRESHOLD = 0.5
 
 
 @dataclass
@@ -74,7 +53,18 @@ def _set_threads() -> None:
     torch.set_num_threads(max(1, min(12, os.cpu_count() or 1)))
 
 
-class QuadDataset:
+def _span_mask(offsets: Sequence[Sequence[int]], start: int, end: int) -> torch.Tensor:
+    torch = _torch()
+    mask = torch.zeros(len(offsets), dtype=torch.bool)
+    for index, (token_start, token_end) in enumerate(offsets):
+        if token_start == token_end == 0:
+            continue
+        if token_start < end and token_end > start:
+            mask[index] = True
+    return mask
+
+
+class PairDataset:
     def __init__(self, frame: pd.DataFrame, tokenizer: Any, max_length: int = 256):
         self.rows = frame.reset_index(drop=True)
         self.tokenizer = tokenizer
@@ -87,54 +77,43 @@ class QuadDataset:
         torch = _torch()
         row = self.rows.iloc[index]
         text = str(row["text"])
+        subj = (int(row["subject_start"]), int(row["subject_end"]))
+        obj = (int(row["object_start"]), int(row["object_end"]))
         encoded = self.tokenizer(
             text, max_length=self.max_length, truncation=True, padding="max_length",
             return_offsets_mapping=True, return_tensors="pt",
         )
         offsets = encoded.pop("offset_mapping").squeeze(0).tolist()
-        bio = [0] * len(offsets)
-        subj = (int(row["subject_start"]), int(row["subject_end"]))
-        obj = (int(row["object_start"]), int(row["object_end"]))
-        subj_tokens: List[int] = []
-        obj_tokens: List[int] = []
-        for token_idx, (start, end) in enumerate(offsets):
+        bio = [BIO_TO_ID["O"]] * len(offsets)
+        subj_mask = _span_mask(offsets, *subj)
+        obj_mask = _span_mask(offsets, *obj)
+        subj_seen = False
+        obj_seen = False
+        for token_index, (start, end) in enumerate(offsets):
             if start == end == 0:
                 continue
-            in_subj = start < subj[1] and end > subj[0]
-            in_obj = start < obj[1] and end > obj[0]
-            if in_subj:
-                bio[token_idx] = BIO_TO_ID["B-S"] if not subj_tokens else BIO_TO_ID["I-S"]
-                subj_tokens.append(token_idx)
-            elif in_obj:
-                bio[token_idx] = BIO_TO_ID["B-O"] if not obj_tokens else BIO_TO_ID["I-O"]
-                obj_tokens.append(token_idx)
-
-        seq_len = len(offsets)
-        pair_s2o = torch.zeros((seq_len, seq_len), dtype=torch.float)
-        pair_o2s = torch.zeros((seq_len, seq_len), dtype=torch.float)
-        for i in subj_tokens:
-            for j in obj_tokens:
-                pair_s2o[i, j] = 1.0
-        for i in obj_tokens:
-            for j in subj_tokens:
-                pair_o2s[i, j] = 1.0
-
+            if subj_mask[token_index]:
+                bio[token_index] = BIO_TO_ID["B-S"] if not subj_seen else BIO_TO_ID["I-S"]
+                subj_seen = True
+            elif obj_mask[token_index]:
+                bio[token_index] = BIO_TO_ID["B-O"] if not obj_seen else BIO_TO_ID["I-O"]
+                obj_seen = True
         aspect = str(row.get("aspect_theme", "其他"))
         aspect_id = ASPECT_THEMES.index(aspect) if aspect in ASPECT_THEMES else ASPECT_THEMES.index("其他")
         try:
             score = float(row.get("score", 0) or 0)
         except (TypeError, ValueError):
             score = 0.0
-        score = max(-1.0, min(1.0, score))
-
+        relation = int(row.get("relation", 1) or 1)
         return {
             "input_ids": encoded["input_ids"].squeeze(0),
             "attention_mask": encoded["attention_mask"].squeeze(0),
             "bio_labels": torch.tensor(bio, dtype=torch.long),
-            "pair_s2o": pair_s2o,
-            "pair_o2s": pair_o2s,
+            "subject_mask": subj_mask,
+            "object_mask": obj_mask,
+            "relation": torch.tensor(relation, dtype=torch.long),
             "aspect_label": torch.tensor(aspect_id, dtype=torch.long),
-            "score": torch.tensor(score, dtype=torch.float),
+            "score": torch.tensor(max(-1.0, min(1.0, score)), dtype=torch.float),
         }
 
 
@@ -149,29 +128,36 @@ def _model_classes():
             self.encoder = AutoModel.from_pretrained(model_name)
             hidden = self.encoder.config.hidden_size
             self.hidden = hidden
-            self.bio_head = torch.nn.Linear(hidden, len(BIO_LABELS))
-            self.s2o_u = torch.nn.Linear(hidden, config.pair_dim)
-            self.s2o_v = torch.nn.Linear(hidden, config.pair_dim)
-            self.o2s_u = torch.nn.Linear(hidden, config.pair_dim)
-            self.o2s_v = torch.nn.Linear(hidden, config.pair_dim)
-            self.aspect_head = torch.nn.Linear(hidden, len(ASPECT_THEMES))
-            self.score_head = torch.nn.Linear(hidden, 1)
             self.dropout = torch.nn.Dropout(config.dropout)
+            self.bio_head = torch.nn.Linear(hidden, len(BIO_LABELS))
+            self.relation_head = torch.nn.Sequential(
+                torch.nn.Linear(hidden * 4, hidden), torch.nn.GELU(), torch.nn.Linear(hidden, 2)
+            )
+            self.aspect_head = torch.nn.Sequential(
+                torch.nn.Linear(hidden * 4, hidden), torch.nn.GELU(), torch.nn.Linear(hidden, len(ASPECT_THEMES))
+            )
+            self.score_head = torch.nn.Sequential(
+                torch.nn.Linear(hidden * 4, hidden), torch.nn.GELU(), torch.nn.Linear(hidden, 1)
+            )
 
-        def forward(self, input_ids, attention_mask):
+        def encode(self, input_ids, attention_mask):
             outputs = self.encoder(input_ids=input_ids, attention_mask=attention_mask)
-            sequence = self.dropout(outputs.last_hidden_state)
+            return self.dropout(outputs.last_hidden_state)
+
+        def pair_heads(self, sequence, subject_mask, object_mask):
+            torch = _torch()
+            mask_s = subject_mask.unsqueeze(-1).to(sequence.dtype)
+            mask_o = object_mask.unsqueeze(-1).to(sequence.dtype)
+            subject = (sequence * mask_s).sum(1) / mask_s.sum(1).clamp(min=1.0)
+            obj = (sequence * mask_o).sum(1) / mask_o.sum(1).clamp(min=1.0)
+            pair = torch.cat([subject, obj, subject * obj, subject - obj], dim=-1)
+            return self.relation_head(pair), self.aspect_head(pair), torch.tanh(self.score_head(pair)).squeeze(-1)
+
+        def forward(self, input_ids, attention_mask, subject_mask, object_mask):
+            sequence = self.encode(input_ids, attention_mask)
             bio_logits = self.bio_head(sequence)
-            su = self.s2o_u(sequence)
-            sv = self.s2o_v(sequence)
-            ou = self.o2s_u(sequence)
-            ov = self.o2s_v(sequence)
-            pair_s2o = torch.matmul(su, sv.transpose(1, 2)) / (self.config.pair_dim ** 0.5)
-            pair_o2s = torch.matmul(ou, ov.transpose(1, 2)) / (self.config.pair_dim ** 0.5)
-            pooled = sequence[:, 0]
-            aspect_logits = self.aspect_head(pooled)
-            score = torch.tanh(self.score_head(pooled)).squeeze(-1)
-            return bio_logits, pair_s2o, pair_o2s, aspect_logits, score
+            relation_logits, aspect_logits, score = self.pair_heads(sequence, subject_mask, object_mask)
+            return bio_logits, relation_logits, aspect_logits, score
 
     return GridTagger
 
@@ -191,16 +177,13 @@ def train_or_load(
     torch = _torch()
     target = resolve_device(device)
     _set_threads()
-    os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
     model_dir.mkdir(parents=True, exist_ok=True)
     config_path = model_dir / "gts_config.json"
     weight_path = model_dir / "gts_model.pt"
     if not force_train and config_path.exists() and weight_path.exists():
-        with open(config_path, "r", encoding="utf-8") as fh:
-            existing = json.load(fh)
+        existing = json.loads(config_path.read_text(encoding="utf-8"))
         if existing.get("model_name") == model_name:
             return
-        force_train = True
 
     from torch.utils.data import DataLoader
     from transformers import AutoTokenizer
@@ -209,21 +192,16 @@ def train_or_load(
     np.random.seed(seed)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     config = GTSConfig(model_name=model_name, max_length=max_length)
-    GridTagger = _model_classes()
-    model = GridTagger(model_name, config).to(target)
-
+    model = _model_classes()(model_name, config).to(target)
     frame = train_df.sample(frac=1.0, random_state=seed).reset_index(drop=True)
     split = max(1, int(len(frame) * 0.9))
     train_part = frame.iloc[:split].reset_index(drop=True)
-    valid_part = frame.iloc[split:].reset_index(drop=True)
-    if valid_part.empty:
-        valid_part = train_part.copy()
-
-    train_loader = DataLoader(QuadDataset(train_part, tokenizer, max_length), batch_size=batch_size, shuffle=True)
-    valid_loader = DataLoader(QuadDataset(valid_part, tokenizer, max_length), batch_size=batch_size, shuffle=False)
+    valid_part = frame.iloc[split:].reset_index(drop=True) if split < len(frame) else train_part.copy()
+    train_loader = DataLoader(PairDataset(train_part, tokenizer, max_length), batch_size=batch_size, shuffle=True)
+    valid_loader = DataLoader(PairDataset(valid_part, tokenizer, max_length), batch_size=batch_size, shuffle=False)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
     bio_loss_fn = torch.nn.CrossEntropyLoss(weight=torch.tensor([1.0, 6.0, 6.0, 6.0, 6.0], device=target))
-    pair_loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=torch.tensor(4.0, device=target))
+    relation_loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=torch.tensor(2.0, device=target))
     aspect_loss_fn = torch.nn.CrossEntropyLoss()
     score_loss_fn = torch.nn.SmoothL1Loss()
 
@@ -233,14 +211,21 @@ def train_or_load(
         running = 0.0
         for batch in train_loader:
             optimizer.zero_grad()
-            input_ids = batch["input_ids"].to(target)
-            attention_mask = batch["attention_mask"].to(target)
-            bio_logits, pair_s2o, pair_o2s, aspect_logits, score = model(input_ids, attention_mask)
+            ids = batch["input_ids"].to(target)
+            mask = batch["attention_mask"].to(target)
+            subj = batch["subject_mask"].to(target)
+            obj = batch["object_mask"].to(target)
+            bio_logits, relation_logits, aspect_logits, score = model(ids, mask, subj, obj)
             bio_loss = bio_loss_fn(bio_logits.view(-1, len(BIO_LABELS)), batch["bio_labels"].to(target).view(-1))
-            pair_loss = pair_loss_fn(pair_s2o, batch["pair_s2o"].to(target)) + pair_loss_fn(pair_o2s, batch["pair_o2s"].to(target))
-            aspect_loss = aspect_loss_fn(aspect_logits, batch["aspect_label"].to(target))
-            score_loss = score_loss_fn(score, batch["score"].to(target))
-            loss = bio_loss + 0.3 * pair_loss + aspect_loss + 0.5 * score_loss
+            relation = batch["relation"].to(target).float()
+            relation_loss = relation_loss_fn(relation_logits[:, 1], relation)
+            positive = relation > 0.5
+            if positive.any():
+                aspect_loss = aspect_loss_fn(aspect_logits[positive], batch["aspect_label"].to(target)[positive])
+                score_loss = score_loss_fn(score[positive], batch["score"].to(target)[positive])
+            else:
+                aspect_loss = score_loss = torch.tensor(0.0, device=target)
+            loss = bio_loss + relation_loss + aspect_loss + 0.5 * score_loss
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
@@ -250,41 +235,44 @@ def train_or_load(
         valid_loss = 0.0
         with torch.no_grad():
             for batch in valid_loader:
-                input_ids = batch["input_ids"].to(target)
-                attention_mask = batch["attention_mask"].to(target)
-                bio_logits, pair_s2o, pair_o2s, aspect_logits, score = model(input_ids, attention_mask)
-                bio_loss = bio_loss_fn(bio_logits.view(-1, len(BIO_LABELS)), batch["bio_labels"].to(target).view(-1))
-                pair_loss = pair_loss_fn(pair_s2o, batch["pair_s2o"].to(target)) + pair_loss_fn(pair_o2s, batch["pair_o2s"].to(target))
-                aspect_loss = aspect_loss_fn(aspect_logits, batch["aspect_label"].to(target))
-                score_loss = score_loss_fn(score, batch["score"].to(target))
-                valid_loss += float((bio_loss + 0.3 * pair_loss + aspect_loss + 0.5 * score_loss).item())
+                ids = batch["input_ids"].to(target)
+                mask = batch["attention_mask"].to(target)
+                subj = batch["subject_mask"].to(target)
+                obj = batch["object_mask"].to(target)
+                bio_logits, relation_logits, aspect_logits, score = model(ids, mask, subj, obj)
+                relation = batch["relation"].to(target).float()
+                loss = bio_loss_fn(bio_logits.view(-1, len(BIO_LABELS)), batch["bio_labels"].to(target).view(-1))
+                loss = loss + relation_loss_fn(relation_logits[:, 1], relation)
+                positive = relation > 0.5
+                if positive.any():
+                    loss = loss + aspect_loss_fn(aspect_logits[positive], batch["aspect_label"].to(target)[positive])
+                    loss = loss + 0.5 * score_loss_fn(score[positive], batch["score"].to(target)[positive])
+                valid_loss += float(loss.item())
         avg_valid = valid_loss / max(1, len(valid_loader))
         print(f"[gts] epoch={epoch} train_loss={running / max(1, len(train_loader)):.4f} valid_loss={avg_valid:.4f}", flush=True)
         if avg_valid < best_loss:
             best_loss = avg_valid
             torch.save(model.state_dict(), weight_path)
             tokenizer.save_pretrained(model_dir)
-            with open(config_path, "w", encoding="utf-8") as fh:
-                json.dump({
-                    "model_name": model_name,
-                    "max_length": max_length,
-                    "pair_dim": config.pair_dim,
-                    "aspect_themes": ASPECT_THEMES,
-                    "bio_labels": BIO_LABELS,
-                    "best_valid_loss": best_loss,
-                }, fh, ensure_ascii=False, indent=2)
+            config_path.write_text(json.dumps({
+                "model_name": model_name,
+                "max_length": max_length,
+                "pair_dim": config.pair_dim,
+                "aspect_themes": ASPECT_THEMES,
+                "bio_labels": BIO_LABELS,
+                "max_pairs": MAX_PAIRS,
+                "best_valid_loss": best_loss,
+            }, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _load_model(model_dir: Path, device: str = "cpu"):
     torch = _torch()
     target = resolve_device(device)
+    cfg = json.loads((model_dir / "gts_config.json").read_text(encoding="utf-8"))
     from transformers import AutoTokenizer
-    with open(model_dir / "gts_config.json", "r", encoding="utf-8") as fh:
-        cfg = json.load(fh)
     tokenizer = AutoTokenizer.from_pretrained(model_dir)
     config = GTSConfig(model_name=cfg["model_name"], max_length=cfg["max_length"], pair_dim=cfg.get("pair_dim", 128))
-    GridTagger = _model_classes()
-    model = GridTagger(cfg["model_name"], config)
+    model = _model_classes()(cfg["model_name"], config)
     model.load_state_dict(torch.load(model_dir / "gts_model.pt", map_location="cpu"))
     model.to(target)
     model.eval()
@@ -296,9 +284,9 @@ def _decode_spans(bio_ids: Sequence[int], offsets: Sequence[Sequence[int]]) -> L
     current_type: Optional[str] = None
     current_start = 0
     current_end = 0
-    for idx, label_id in enumerate(bio_ids):
+    for index, label_id in enumerate(bio_ids):
         label = BIO_LABELS[label_id] if 0 <= label_id < len(BIO_LABELS) else "O"
-        start, end = offsets[idx]
+        start, end = offsets[index]
         if start == end == 0:
             continue
         if label == "O":
@@ -321,8 +309,7 @@ def _decode_spans(bio_ids: Sequence[int], offsets: Sequence[Sequence[int]]) -> L
 
 
 def _text_group(unit_id: str) -> str:
-    parts = unit_id.split("_")
-    return "_".join(parts[:2])
+    return "_".join(unit_id.split("_")[:2])
 
 
 def _title_end(text: str) -> int:
@@ -345,7 +332,6 @@ def predict_dataframe(
     _set_threads()
     model, tokenizer, config = _load_model(model_dir, device)
     rows: List[Dict[str, Any]] = []
-
     for _, row in frame.iterrows():
         unit_id = str(row["id"])
         text = str(row["sentence"] if "sentence" in row else row.get("compare_sentence", row.get("simple_sentence", "")))
@@ -356,38 +342,30 @@ def predict_dataframe(
             return_offsets_mapping=True, return_tensors="pt",
         )
         offsets = encoded.pop("offset_mapping").squeeze(0).tolist()
-        input_ids = encoded["input_ids"].to(target)
-        attention_mask = encoded["attention_mask"].to(target)
+        ids = encoded["input_ids"].to(target)
+        mask = encoded["attention_mask"].to(target)
         with torch.no_grad():
-            bio_logits, pair_s2o, pair_o2s, aspect_logits, score = model(input_ids, attention_mask)
+            sequence = model.encode(ids, mask)
+            bio_logits = model.bio_head(sequence)
         bio_ids = torch.argmax(bio_logits[0], dim=-1).cpu().tolist()
         spans = _decode_spans(bio_ids, offsets)
-        subjects = [(s, e) for kind, s, e in spans if kind == "S"]
-        objects = [(s, e) for kind, s, e in spans if kind == "O"]
+        subjects = [(s, e) for kind, s, e in spans if kind == "S"][:5]
+        objects = [(s, e) for kind, s, e in spans if kind == "O"][:5]
         if not subjects or not objects:
             continue
-
-        s2o = torch.sigmoid(pair_s2o[0]).cpu().numpy()
-        o2s = torch.sigmoid(pair_o2s[0]).cpu().numpy()
-        aspect = ASPECT_THEMES[int(torch.argmax(aspect_logits[0]).item())]
-        score_value = float(score[0].item())
-        title_end = _title_end(text)
-        candidates: List[Dict[str, Any]] = []
-
-        for subj in subjects[:5]:
-            for obj in objects[:5]:
-                subj_tokens = [i for i, (s, e) in enumerate(offsets) if s < subj[1] and e > subj[0]]
-                obj_tokens = [i for i, (s, e) in enumerate(offsets) if s < obj[1] and e > obj[0]]
-                if not subj_tokens or not obj_tokens:
-                    continue
-                forward = float(s2o[np.ix_(subj_tokens, obj_tokens)].max())
-                backward = float(o2s[np.ix_(obj_tokens, subj_tokens)].max())
-                confidence = max(forward, backward)
+        candidates = []
+        for subj in subjects:
+            for obj in objects:
+                subj_mask = _span_mask(offsets, *subj).unsqueeze(0).to(target)
+                obj_mask = _span_mask(offsets, *obj).unsqueeze(0).to(target)
+                with torch.no_grad():
+                    relation_logits, aspect_logits, score = model.pair_heads(sequence, subj_mask, obj_mask)
+                confidence = float(torch.softmax(relation_logits, dim=-1)[0, 1].item())
                 if confidence < pair_threshold:
                     continue
-                direction = "S→O" if forward >= backward else "O→S"
-                subject_source = "title" if title_end and subj[0] < title_end else "body"
-                object_source = "title" if title_end and obj[0] < title_end else "body"
+                aspect = ASPECT_THEMES[int(torch.argmax(aspect_logits[0]).item())]
+                score_value = float(score[0].item())
+                title_end = _title_end(text)
                 candidates.append({
                     "unit_id": unit_id,
                     "text_group_id": _text_group(unit_id),
@@ -398,18 +376,16 @@ def predict_dataframe(
                     "object_raw": text[obj[0]:obj[1]],
                     "object_start": obj[0],
                     "object_end": obj[1],
-                    "direction_raw": direction,
+                    "direction_raw": "S→O",
                     "aspect_theme": aspect,
                     "score_raw": score_value,
-                    "subject_source": subject_source,
-                    "object_source": object_source,
-                    "source": "title" if "title" in (subject_source, object_source) else "chain",
+                    "subject_source": "title" if title_end and subj[0] < title_end else "body",
+                    "object_source": "title" if title_end and obj[0] < title_end else "body",
+                    "source": "pair",
                     "confidence": confidence,
                 })
-
         candidates.sort(key=lambda item: item["confidence"], reverse=True)
         for number, candidate in enumerate(candidates[:max_pairs], start=1):
             candidate["mention_id"] = f"{unit_id}_{number:02d}"
             rows.append(candidate)
-
     return rows
