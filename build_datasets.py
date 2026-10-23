@@ -263,7 +263,32 @@ def build_gts(units, annotations) -> Dict[str, int]:
                 "source": annotation.get("source", "raw"),
                 "platform": annotation.get("platform", ""),
                 "split": split,
+                "augmented": 0,
             })
+            # Directional augmentation: A better than B implies B worse than A.
+            # Only train; test/valid remain untouched.
+            if split == "train" and float(quad["score"]) > 0 and quad["subject"] != quad["object"]:
+                positives_by_split[split].append({
+                    "pair_id": f"{article_id}_cut{index + 1:02d}_pf{number:02d}",
+                    "mention_id": f"{article_id}_cut{index + 1:02d}_f{number:02d}",
+                    "text_group_id": article_id,
+                    "text": text,
+                    "subject_raw": quad["object"],
+                    "subject_start": os_,
+                    "subject_end": oe,
+                    "object_raw": quad["subject"],
+                    "object_start": ss,
+                    "object_end": se,
+                    "relation": 1,
+                    "aspect_theme": quad["aspect_theme"],
+                    "score": -float(quad["score"]),
+                    "subject_source": quad.get("object_source", "body"),
+                    "object_source": quad.get("subject_source", "body"),
+                    "source": annotation.get("source", "raw"),
+                    "platform": annotation.get("platform", ""),
+                    "split": split,
+                    "augmented": 1,
+                })
         # Hard negatives from cross-quad entity pairs.
         entities = []
         for index, quad in quads:
@@ -361,7 +386,7 @@ def build_gts(units, annotations) -> Dict[str, int]:
                 made += 1
 
     counts = {}
-    columns = ["pair_id", "mention_id", "text_group_id", "text", "subject_raw", "subject_start", "subject_end", "object_raw", "object_start", "object_end", "relation", "aspect_theme", "score", "subject_source", "object_source", "source", "platform", "split"]
+    columns = ["pair_id", "mention_id", "text_group_id", "text", "subject_raw", "subject_start", "subject_end", "object_raw", "object_start", "object_end", "relation", "aspect_theme", "score", "subject_source", "object_source", "source", "platform", "split", "augmented"]
     for split in ("train", "valid", "test"):
         positives = positives_by_split.get(split, [])
         negatives = negative_pool.get(split, [])
@@ -379,6 +404,8 @@ def build_gts(units, annotations) -> Dict[str, int]:
             negatives = raw_neg[:n_neg] + gen_neg[:n_neg]
         else:
             negatives = negatives[:len(positives) * 2]
+        for row in negatives:
+            row.setdefault("augmented", 0)
         rows = positives + negatives
         rng.shuffle(rows)
         path = DATA / "gts" / f"gts_{split}.csv"
