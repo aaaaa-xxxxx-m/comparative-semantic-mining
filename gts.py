@@ -202,8 +202,18 @@ def train_or_load(
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
     bio_loss_fn = torch.nn.CrossEntropyLoss(weight=torch.tensor([1.0, 6.0, 6.0, 6.0, 6.0], device=target))
     relation_loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=torch.tensor(2.0, device=target))
-    aspect_loss_fn = torch.nn.CrossEntropyLoss()
-    score_loss_fn = torch.nn.SmoothL1Loss()
+    positive_frame = train_part[train_part["relation"].astype(int) == 1]
+    aspect_counts = positive_frame["aspect_theme"].value_counts()
+    total = max(1, int(len(positive_frame)))
+    weights = []
+    for theme in ASPECT_THEMES:
+        count = int(aspect_counts.get(theme, 0))
+        weights.append((total / (len(ASPECT_THEMES) * max(1, count))) ** 0.5)
+    aspect_weights = torch.tensor(weights, dtype=torch.float, device=target)
+    aspect_weights = torch.clamp(aspect_weights, min=0.5, max=5.0)
+    aspect_loss_fn = torch.nn.CrossEntropyLoss(weight=aspect_weights)
+    aspect_loss_fn_eval = torch.nn.CrossEntropyLoss(weight=aspect_weights)
+    score_loss_fn = torch.nn.SmoothL1Loss(reduction="none")
 
     best_loss = float("inf")
     for epoch in range(1, epochs + 1):
@@ -222,7 +232,9 @@ def train_or_load(
             positive = relation > 0.5
             if positive.any():
                 aspect_loss = aspect_loss_fn(aspect_logits[positive], batch["aspect_label"].to(target)[positive])
-                score_loss = score_loss_fn(score[positive], batch["score"].to(target)[positive])
+                score_values = batch["score"].to(target)[positive]
+                score_weights = torch.where(score_values < 0, 2.5, torch.where(score_values > 0, 1.0, 1.5))
+                score_loss = (score_loss_fn(score[positive], score_values) * score_weights).sum() / score_weights.sum().clamp(min=1.0)
             else:
                 aspect_loss = score_loss = torch.tensor(0.0, device=target)
             loss = bio_loss + relation_loss + aspect_loss + 0.5 * score_loss
@@ -245,8 +257,11 @@ def train_or_load(
                 loss = loss + relation_loss_fn(relation_logits[:, 1], relation)
                 positive = relation > 0.5
                 if positive.any():
-                    loss = loss + aspect_loss_fn(aspect_logits[positive], batch["aspect_label"].to(target)[positive])
-                    loss = loss + 0.5 * score_loss_fn(score[positive], batch["score"].to(target)[positive])
+                    loss = loss + aspect_loss_fn_eval(aspect_logits[positive], batch["aspect_label"].to(target)[positive])
+                    score_values = batch["score"].to(target)[positive]
+                    score_weights = torch.where(score_values < 0, 2.5, torch.where(score_values > 0, 1.0, 1.5))
+                    score_loss = (score_loss_fn(score[positive], score_values) * score_weights).sum() / score_weights.sum().clamp(min=1.0)
+                    loss = loss + 0.5 * score_loss
                 valid_loss += float(loss.item())
         avg_valid = valid_loss / max(1, len(valid_loader))
         print(f"[gts] epoch={epoch} train_loss={running / max(1, len(train_loader)):.4f} valid_loss={avg_valid:.4f}", flush=True)
@@ -262,6 +277,7 @@ def train_or_load(
                 "bio_labels": BIO_LABELS,
                 "max_pairs": MAX_PAIRS,
                 "best_valid_loss": best_loss,
+                "aspect_weights": aspect_weights.cpu().tolist(),
             }, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
