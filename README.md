@@ -16,9 +16,9 @@
 | 生成训练单元 | 599 |
 | GLM 5.3 Flash 标注 | 1,599 |
 | Filter train / valid / test | 1,384 / 903 / 1,132 |
-| GTS train / valid / test | 1,086 / 183 / 168 |
+| GTS train / valid / test | 1,722 / 183 / 168 |
 | 训练集 raw : generated | 5 : 5 |
-| GTS 正 : 负 pair | 1 : 2 |
+| GTS 正 : 负 pair | 574 : 1,148（1 : 2） |
 | 模型权重 | 未训练，不包含在仓库中 |
 
 测试集只使用原始数据，生成数据只进入训练集。
