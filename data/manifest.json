@@ -34,12 +34,12 @@
   },
   "gts_labels": {
     "train": {
-      "positive": 532,
-      "negative": 1190
+      "positive": 530,
+      "negative": 1192
     },
     "valid": {
-      "positive": 45,
-      "negative": 137
+      "positive": 40,
+      "negative": 142
     },
     "test": {
       "positive": 56,
