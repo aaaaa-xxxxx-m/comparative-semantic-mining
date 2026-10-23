@@ -281,6 +281,7 @@ def train_filter(args: argparse.Namespace) -> None:
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
     loss_fn = torch.nn.CrossEntropyLoss()
     best_loss = float("inf")
+    patience_left = args.patience
     model_dir = Path(args.model_dir)
     model_dir.mkdir(parents=True, exist_ok=True)
 
@@ -307,6 +308,7 @@ def train_filter(args: argparse.Namespace) -> None:
         )
         if valid_loss < best_loss:
             best_loss = valid_loss
+            patience_left = args.patience
             torch.save(model.state_dict(), model_dir / "filter_model.pt")
             tokenizer.save_pretrained(model_dir)
             with open(model_dir / "filter_config.json", "w", encoding="utf-8") as fh:
@@ -318,6 +320,11 @@ def train_filter(args: argparse.Namespace) -> None:
                     "start_threshold": filter_module.START_THRESHOLD,
                     "best_valid_loss": best_loss,
                 }, fh, ensure_ascii=False, indent=2)
+        else:
+            patience_left -= 1
+            if patience_left <= 0:
+                print(f"[filter] early stop at epoch={epoch}", flush=True)
+                break
 
 
 def train_gts(args: argparse.Namespace) -> None:
@@ -363,6 +370,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--epochs", type=int, default=3)
     p.add_argument("--lr", type=float, default=2e-5)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--patience", type=int, default=2)
     p.set_defaults(func=train_filter)
 
     p = sub.add_parser("gts", parents=[common], help="训练 GTS")
