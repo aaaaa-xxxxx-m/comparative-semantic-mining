@@ -92,6 +92,17 @@ python run.py all --device cuda
 
 `filter` 和 `extract` 需要对应模型权重；当前仓库不包含权重。
 
+Filter 阈值需要在原始验证集上校准，命令行支持：
+
+```powershell
+python run.py filter --device cuda `
+  --u-threshold 0.5 `
+  --l-continue-threshold 0.4 `
+  --title-gate-mode recall
+```
+
+`--title-gate-mode recall` 会扩大 T 的 gate 覆盖，但需要同时检查 precision，不能直接在测试集上调。
+
 ### 4. 评估
 
 训练完成后，在原始测试集上评估：
