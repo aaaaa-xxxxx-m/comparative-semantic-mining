@@ -8,25 +8,14 @@
     "test": 1132
   },
   "gts": {
-    "train": 1086,
+    "train": 1722,
     "valid": 183,
     "test": 168
   },
-  "source_policy": {
-    "train_raw_generated": "5:5",
-    "valid": "raw_only",
-    "test": "raw_only"
+  "gts_augmentation": {
+    "directional_train_only": 234,
+    "positive_pairs": 574,
+    "negative_pairs": 1148
   },
-  "filter_sampling": {
-    "l_mid_continue_stop": "2:1",
-    "l_boundary_continue_stop": "1:1",
-    "max_quads_per_article": 3,
-    "l_boundary": "natural_after_source_balance"
-  },
-  "id_scheme": {
-    "raw_unit": "a_80000001..a_80001000",
-    "generated_unit": "a_81000001..a_81000599",
-    "sentence_unit": "a_..._cutNN",
-    "mention": "a_..._cutNN_01"
-  }
+  "aspect_weights": "computed in train.py"
 }
