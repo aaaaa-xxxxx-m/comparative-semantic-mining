@@ -32,6 +32,7 @@ MAX_SENTENCES = 5
 MAX_TOKENS = 512
 T_THRESHOLD = 0.9
 START_THRESHOLD = 0.5
+L_CONTINUE_THRESHOLD = 0.5
 
 
 def resolve_device(requested: str) -> torch.device:
@@ -310,6 +311,8 @@ def run_filter(
     max_sentences: int = MAX_SENTENCES,
     max_tokens: int = MAX_TOKENS,
     title_threshold: float = T_THRESHOLD,
+    l_start_threshold: float = START_THRESHOLD,
+    l_continue_threshold: float = L_CONTINUE_THRESHOLD,
     device: str = "cpu",
 ) -> pd.DataFrame:
     frame = pd.read_csv(sentences_path, encoding="utf-8-sig", dtype=str).fillna("")
@@ -339,7 +342,7 @@ def run_filter(
                 title_score = model.score_t(title_ids, title_mask, current_ids, current_mask)
 
             start_by_title = False
-            if u_score >= START_THRESHOLD or l_score >= START_THRESHOLD:
+            if u_score >= START_THRESHOLD or l_score >= l_start_threshold:
                 start = True
             elif unit.title and title_score >= title_threshold:
                 start = True
@@ -362,7 +365,7 @@ def run_filter(
                     break
                 candidate_ids, candidate_mask = _encode(tokenizer, candidate.current, device=target)
                 link = model.score_l(context_items, candidate_ids, candidate_mask)
-                if link < START_THRESHOLD:
+                if link < l_continue_threshold:
                     break
                 chain.append(candidate.current)
                 context_items.append((candidate_ids, candidate_mask))
