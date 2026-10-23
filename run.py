@@ -216,6 +216,8 @@ def filter_units(args: argparse.Namespace) -> None:
         title_threshold=args.title_threshold,
         l_start_threshold=args.l_start_threshold,
         l_continue_threshold=args.l_continue_threshold,
+        u_threshold=args.u_threshold,
+        title_gate_mode=args.title_gate_mode,
         device=args.device,
     )
     update_run_json(filter={
@@ -466,6 +468,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--title-threshold", type=float, default=0.9)
     p.add_argument("--l-start-threshold", type=float, default=0.5)
     p.add_argument("--l-continue-threshold", type=float, default=0.5)
+    p.add_argument("--u-threshold", type=float, default=0.5)
+    p.add_argument("--title-gate-mode", choices=["strict", "recall"], default="strict")
     p.add_argument("--device", default="cpu", help="cpu、cuda 或 cuda:N；默认 cpu")
     p.set_defaults(func=filter_units)
 
@@ -488,6 +492,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--title-threshold", type=float, default=0.9)
     p.add_argument("--l-start-threshold", type=float, default=0.5)
     p.add_argument("--l-continue-threshold", type=float, default=0.5)
+    p.add_argument("--u-threshold", type=float, default=0.5)
+    p.add_argument("--title-gate-mode", choices=["strict", "recall"], default="strict")
     p.add_argument("--max-length", type=int, default=256)
     p.add_argument("--max-pairs", type=int, default=20)
     p.add_argument("--pair-threshold", type=float, default=0.5)
