@@ -14,6 +14,7 @@ import pandas as pd
 ASPECT_THEMES = ["文化认知", "消费场景", "产品体验", "竞争压力", "其他"]
 BIO_LABELS = ["O", "B-S", "I-S", "B-O", "I-O"]
 BIO_TO_ID = {label: idx for idx, label in enumerate(BIO_LABELS)}
+SCORE_VALUES = [-1.0, -0.8, -0.6, -0.4, -0.2, 0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
 SEP = "[SEP]"
 MAX_PAIRS = 20
 PAIR_THRESHOLD = 0.5
@@ -114,6 +115,7 @@ class PairDataset:
             "relation": torch.tensor(relation, dtype=torch.long),
             "aspect_label": torch.tensor(aspect_id, dtype=torch.long),
             "score": torch.tensor(max(-1.0, min(1.0, score)), dtype=torch.float),
+            "score_label": torch.tensor(min(range(len(SCORE_VALUES)), key=lambda i: abs(SCORE_VALUES[i] - score)), dtype=torch.long),
         }
 
 
@@ -137,7 +139,7 @@ def _model_classes():
                 torch.nn.Linear(hidden * 4, hidden), torch.nn.GELU(), torch.nn.Linear(hidden, len(ASPECT_THEMES))
             )
             self.score_head = torch.nn.Sequential(
-                torch.nn.Linear(hidden * 4, hidden), torch.nn.GELU(), torch.nn.Linear(hidden, 1)
+                torch.nn.Linear(hidden * 4, hidden), torch.nn.GELU(), torch.nn.Linear(hidden, len(SCORE_VALUES))
             )
 
         def encode(self, input_ids, attention_mask):
@@ -151,13 +153,13 @@ def _model_classes():
             subject = (sequence * mask_s).sum(1) / mask_s.sum(1).clamp(min=1.0)
             obj = (sequence * mask_o).sum(1) / mask_o.sum(1).clamp(min=1.0)
             pair = torch.cat([subject, obj, subject * obj, subject - obj], dim=-1)
-            return self.relation_head(pair), self.aspect_head(pair), torch.tanh(self.score_head(pair)).squeeze(-1)
+            return self.relation_head(pair), self.aspect_head(pair), self.score_head(pair)
 
         def forward(self, input_ids, attention_mask, subject_mask, object_mask):
             sequence = self.encode(input_ids, attention_mask)
             bio_logits = self.bio_head(sequence)
-            relation_logits, aspect_logits, score = self.pair_heads(sequence, subject_mask, object_mask)
-            return bio_logits, relation_logits, aspect_logits, score
+            relation_logits, aspect_logits, score_logits = self.pair_heads(sequence, subject_mask, object_mask)
+            return bio_logits, relation_logits, aspect_logits, score_logits
 
     return GridTagger
 
@@ -213,7 +215,15 @@ def train_or_load(
     aspect_weights = torch.clamp(aspect_weights, min=0.5, max=5.0)
     aspect_loss_fn = torch.nn.CrossEntropyLoss(weight=aspect_weights)
     aspect_loss_fn_eval = torch.nn.CrossEntropyLoss(weight=aspect_weights)
-    score_loss_fn = torch.nn.SmoothL1Loss(reduction="none")
+    score_counts = positive_frame["score"].apply(lambda value: min(range(len(SCORE_VALUES)), key=lambda i: abs(SCORE_VALUES[i] - float(value)))).value_counts()
+    score_weights = []
+    for index in range(len(SCORE_VALUES)):
+        count = int(score_counts.get(index, 0))
+        score_weights.append((total / (len(SCORE_VALUES) * max(1, count))) ** 0.5)
+    score_weights = torch.tensor(score_weights, dtype=torch.float, device=target)
+    score_weights = torch.clamp(score_weights, min=0.5, max=5.0)
+    score_loss_fn = torch.nn.CrossEntropyLoss(weight=score_weights)
+    score_loss_fn_eval = torch.nn.CrossEntropyLoss(weight=score_weights)
 
     best_loss = float("inf")
     for epoch in range(1, epochs + 1):
@@ -225,16 +235,14 @@ def train_or_load(
             mask = batch["attention_mask"].to(target)
             subj = batch["subject_mask"].to(target)
             obj = batch["object_mask"].to(target)
-            bio_logits, relation_logits, aspect_logits, score = model(ids, mask, subj, obj)
+            bio_logits, relation_logits, aspect_logits, score_logits = model(ids, mask, subj, obj)
             bio_loss = bio_loss_fn(bio_logits.view(-1, len(BIO_LABELS)), batch["bio_labels"].to(target).view(-1))
             relation = batch["relation"].to(target).float()
             relation_loss = relation_loss_fn(relation_logits[:, 1], relation)
             positive = relation > 0.5
             if positive.any():
                 aspect_loss = aspect_loss_fn(aspect_logits[positive], batch["aspect_label"].to(target)[positive])
-                score_values = batch["score"].to(target)[positive]
-                score_weights = torch.where(score_values < 0, 2.5, torch.where(score_values > 0, 1.0, 1.5))
-                score_loss = (score_loss_fn(score[positive], score_values) * score_weights).sum() / score_weights.sum().clamp(min=1.0)
+                score_loss = score_loss_fn(score_logits[positive], batch["score_label"].to(target)[positive])
             else:
                 aspect_loss = score_loss = torch.tensor(0.0, device=target)
             loss = bio_loss + relation_loss + aspect_loss + 0.5 * score_loss
@@ -251,16 +259,14 @@ def train_or_load(
                 mask = batch["attention_mask"].to(target)
                 subj = batch["subject_mask"].to(target)
                 obj = batch["object_mask"].to(target)
-                bio_logits, relation_logits, aspect_logits, score = model(ids, mask, subj, obj)
+                bio_logits, relation_logits, aspect_logits, score_logits = model(ids, mask, subj, obj)
                 relation = batch["relation"].to(target).float()
                 loss = bio_loss_fn(bio_logits.view(-1, len(BIO_LABELS)), batch["bio_labels"].to(target).view(-1))
                 loss = loss + relation_loss_fn(relation_logits[:, 1], relation)
                 positive = relation > 0.5
                 if positive.any():
                     loss = loss + aspect_loss_fn_eval(aspect_logits[positive], batch["aspect_label"].to(target)[positive])
-                    score_values = batch["score"].to(target)[positive]
-                    score_weights = torch.where(score_values < 0, 2.5, torch.where(score_values > 0, 1.0, 1.5))
-                    score_loss = (score_loss_fn(score[positive], score_values) * score_weights).sum() / score_weights.sum().clamp(min=1.0)
+                    score_loss = score_loss_fn_eval(score_logits[positive], batch["score_label"].to(target)[positive])
                     loss = loss + 0.5 * score_loss
                 valid_loss += float(loss.item())
         avg_valid = valid_loss / max(1, len(valid_loader))
@@ -275,6 +281,7 @@ def train_or_load(
                 "pair_dim": config.pair_dim,
                 "aspect_themes": ASPECT_THEMES,
                 "bio_labels": BIO_LABELS,
+                "score_values": SCORE_VALUES,
                 "max_pairs": MAX_PAIRS,
                 "best_valid_loss": best_loss,
                 "aspect_weights": aspect_weights.cpu().tolist(),
@@ -375,12 +382,13 @@ def predict_dataframe(
                 subj_mask = _span_mask(offsets, *subj).unsqueeze(0).to(target)
                 obj_mask = _span_mask(offsets, *obj).unsqueeze(0).to(target)
                 with torch.no_grad():
-                    relation_logits, aspect_logits, score = model.pair_heads(sequence, subj_mask, obj_mask)
+                    relation_logits, aspect_logits, score_logits = model.pair_heads(sequence, subj_mask, obj_mask)
                 confidence = float(torch.softmax(relation_logits, dim=-1)[0, 1].item())
                 if confidence < pair_threshold:
                     continue
                 aspect = ASPECT_THEMES[int(torch.argmax(aspect_logits[0]).item())]
-                score_value = float(score[0].item())
+                score_index = int(torch.argmax(score_logits[0]).item())
+                score_value = SCORE_VALUES[score_index]
                 title_end = _title_end(text)
                 candidates.append({
                     "unit_id": unit_id,
