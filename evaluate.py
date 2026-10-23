@@ -75,7 +75,7 @@ def evaluate_gts(model_dir: Path, data_path: Path, device: str, threshold: float
             mask = batch["attention_mask"].to(target)
             subj = batch["subject_mask"].to(target)
             obj = batch["object_mask"].to(target)
-            _, rel_logits, aspect_logits, score = model(ids, mask, subj, obj)
+            _, rel_logits, aspect_logits, score_logits = model(ids, mask, subj, obj)
             rel_pred = (torch.softmax(rel_logits, dim=-1)[:, 1] >= threshold).long()
             aspect_pred = torch.argmax(aspect_logits, dim=-1)
             gold_rel.extend(batch["relation"].tolist())
@@ -85,7 +85,8 @@ def evaluate_gts(model_dir: Path, data_path: Path, device: str, threshold: float
                 a_gold = batch["aspect_label"][positive].to(target)
                 a_pred = aspect_pred[positive]
                 s_gold = batch["score"][positive].to(target)
-                s_pred = score[positive]
+                score_indices = torch.argmax(score_logits[positive], dim=-1).cpu().tolist()
+                s_pred = torch.tensor([gts.SCORE_VALUES[index] for index in score_indices], dtype=torch.float, device=target)
                 aspect_hits += int((a_gold == a_pred).sum().item())
                 aspect_total += int(positive.sum().item())
                 score_abs.extend(torch.abs(s_gold - s_pred).cpu().tolist())
