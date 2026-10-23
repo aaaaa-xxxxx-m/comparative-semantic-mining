@@ -214,6 +214,8 @@ def filter_units(args: argparse.Namespace) -> None:
         max_sentences=args.max_sentences,
         max_tokens=args.max_tokens,
         title_threshold=args.title_threshold,
+        l_start_threshold=args.l_start_threshold,
+        l_continue_threshold=args.l_continue_threshold,
         device=args.device,
     )
     update_run_json(filter={
@@ -462,14 +464,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-sentences", type=int, default=5)
     p.add_argument("--max-tokens", type=int, default=512)
     p.add_argument("--title-threshold", type=float, default=0.9)
+    p.add_argument("--l-start-threshold", type=float, default=0.5)
+    p.add_argument("--l-continue-threshold", type=float, default=0.5)
     p.add_argument("--device", default="cpu", help="cpu、cuda 或 cuda:N；默认 cpu")
     p.set_defaults(func=filter_units)
 
     p = sub.add_parser("extract", help="GTS 抽取四元组")
     p.add_argument("--gts-model-dir", type=Path, default=GTS_DIR)
     p.add_argument("--max-length", type=int, default=256)
-    p.add_argument("--max-pairs", type=int, default=30)
-    p.add_argument("--pair-threshold", type=float, default=0.1)
+    p.add_argument("--max-pairs", type=int, default=20)
+    p.add_argument("--pair-threshold", type=float, default=0.5)
     p.add_argument("--device", default="cpu", help="cpu、cuda 或 cuda:N；默认 cpu")
     p.set_defaults(func=extract_quads)
 
@@ -482,9 +486,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-sentences", type=int, default=5)
     p.add_argument("--max-tokens", type=int, default=512)
     p.add_argument("--title-threshold", type=float, default=0.9)
+    p.add_argument("--l-start-threshold", type=float, default=0.5)
+    p.add_argument("--l-continue-threshold", type=float, default=0.5)
     p.add_argument("--max-length", type=int, default=256)
-    p.add_argument("--max-pairs", type=int, default=30)
-    p.add_argument("--pair-threshold", type=float, default=0.1)
+    p.add_argument("--max-pairs", type=int, default=20)
+    p.add_argument("--pair-threshold", type=float, default=0.5)
     p.add_argument("--device", default="cpu", help="cpu、cuda 或 cuda:N；默认 cpu")
     p.set_defaults(func=lambda args: (filter_units(args), extract_quads(args), normalize(args)))
     return parser
