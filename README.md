@@ -143,6 +143,44 @@ python evaluate.py --device cuda
 
 测试集不参与训练或调参；exact 要求主体、客体、方面、得分全部正确，得分容差为 `±0.05`。
 
+## 训练后回传模型
+
+训练完成后，回传整个模型目录，不要只传单个 `.pt` 文件：
+
+```text
+models/filter/filter_model.pt
+models/filter/filter_config.json
+models/filter/tokenizer files
+
+models/gts/gts_model.pt
+models/gts/gts_config.json
+models/gts/tokenizer files
+```
+
+模型文件通常较大，优先使用 GitHub Release：
+
+```powershell
+Compress-Archive -Path models -DestinationPath trained-models.zip
+gh release create models-v1 trained-models.zip --title "Trained models v1"
+```
+
+主设备下载：
+
+```powershell
+gh release download models-v1 --pattern trained-models.zip
+Expand-Archive trained-models.zip -DestinationPath .
+```
+
+如果每个文件都小于 100MB，可以直接提交：
+
+```powershell
+git add -f models/filter models/gts
+git commit -m "chore: add trained models"
+git push
+```
+
+`models/` 默认被 `.gitignore` 忽略，所以需要 `git add -f`；超过 100MB 的单个文件不要直接提交。
+
 ## 项目结构
 
 ```text
