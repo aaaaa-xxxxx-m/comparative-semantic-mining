@@ -278,6 +278,12 @@ T：标题 + 当前句是否比较
 
 ## GTS 数据
 
+GTS 使用 pair 级数据。所有监督得分已量化到以下档位：
+
+```text
+-1.0, -0.8, -0.6, -0.4, -0.2, 0.0, 0.2, 0.4, 0.6, 0.8, 1.0
+```
+
 GTS 使用 pair 级数据：
 
 ```text
@@ -288,7 +294,7 @@ GTS 使用 pair 级数据：
 
 负 pair 来自同一文章内的交叉实体对和词典实体对；负 pair 的方面为“其他”，得分为 0。
 
-GTS 模型保留 BIO span 抽取，并按 pair 分别预测 relation、aspect 和 score。`max_pairs=20`，在 relation 过滤和排序后截断。
+GTS 模型保留 BIO span 抽取，并按 pair 分别预测 relation、aspect 和离散 score。score 头是 11 类分类，输出 `-1.0` 到 `1.0`、间隔 `0.2` 的档位。`max_pairs=20`，在 relation 过滤和排序后截断。
 
 不做实体名规范化。
 
